@@ -1,0 +1,5 @@
+# Python dependencies for VideoP2P application
+cryptography>=3.4.0
+pyaudio>=0.2.11  # Requires PortAudio as system dependency
+opencv-python>=4.5.0
+numpy>=1.19.0

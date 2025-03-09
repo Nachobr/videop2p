@@ -1,29 +1,74 @@
 const WebSocket = require("ws");
 
 const port = process.env.PORT || 8080;
-const wss = new WebSocket.Server({ port });
+const wss = new WebSocket.Server({ 
+  port,
+  // Add WebSocket specific headers
+  handleProtocols: (protocols, request) => {
+    return protocols[0];
+  },
+  // Add headers for WebRTC and security
+  perMessageDeflate: {
+    zlibDeflateOptions: {
+      chunkSize: 1024,
+      memLevel: 7,
+      level: 3
+    },
+    zlibInflateOptions: {
+      chunkSize: 10 * 1024
+    },
+    clientNoContextTakeover: true,
+    serverNoContextTakeover: true,
+    serverMaxWindowBits: 10,
+    concurrencyLimit: 10,
+    threshold: 1024
+  }
+});
+
+// Add headers middleware
+wss.on('headers', (headers) => {
+  headers.push(
+    'Content-Security-Policy: default-src \'self\'; connect-src \'self\' ws: wss: *; media-src mediastream: *; script-src \'self\' \'unsafe-eval\'; style-src \'self\' \'unsafe-inline\''
+  );
+});
 const rooms = new Map();
 
 wss.on("connection", (ws) => {
-  console.log("New client connected");
+  console.log("New client connected", new Date().toISOString());
 
   ws.on("message", (message) => {
     try {
       const data = JSON.parse(message);
       const { type, roomId, from, to, sdp, candidate } = data;
 
+      console.log(`Received ${type} message:`, {
+        type,
+        roomId,
+        from: from?.substring(0, 8), // Log only first 8 chars of address
+        to: to?.substring(0, 8),
+        hasSDP: !!sdp,
+        hasCandidate: !!candidate
+      });
+
       if (type === "join") {
-        if (!rooms.has(roomId)) rooms.set(roomId, new Set());
+        if (!rooms.has(roomId)) {
+          rooms.set(roomId, new Set());
+          console.log(`Created new room: ${roomId}`);
+        }
         rooms.get(roomId).add(ws);
-        console.log(`Client joined room: ${roomId}`);
+        console.log(`Client ${from?.substring(0, 8)} joined room: ${roomId}`);
+        console.log(`Room ${roomId} has ${rooms.get(roomId).size} clients`);
       } else {
         const room = rooms.get(roomId);
         if (room) {
+          let sentTo = 0;
           room.forEach((client) => {
             if (client !== ws && client.readyState === WebSocket.OPEN) {
               client.send(JSON.stringify({ ...data, from: from || "unknown" }));
+              sentTo++;
             }
           });
+          console.log(`Message ${type} forwarded to ${sentTo} clients in room ${roomId}`);
         } else {
           console.log(`Room not found: ${roomId}`);
         }
@@ -34,16 +79,32 @@ wss.on("connection", (ws) => {
   });
 
   ws.on("close", () => {
+    let roomLeft = null;
     rooms.forEach((clients, roomId) => {
       if (clients.has(ws)) {
-    clients.delete(ws);
-    if (clients.size === 0) rooms.delete(roomId);
+        clients.delete(ws);
+        roomLeft = roomId;
+        console.log(`Client left room: ${roomId}, remaining clients: ${clients.size}`);
+        if (clients.size === 0) {
+          rooms.delete(roomId);
+          console.log(`Room ${roomId} deleted - no more clients`);
+        }
       }
     });
-    console.log("Client disconnected");
+    console.log(`Client disconnected from${roomLeft ? ` room ${roomLeft}` : ' server'}`);
   });
 
   ws.on("error", (error) => console.error("WebSocket error:", error));
 });
 
 console.log(`Signaling server running on port ${port}`);
+console.log(`Active rooms: ${rooms.size}`);
+
+// Log room status every 30 seconds
+setInterval(() => {
+  console.log("\n=== Room Status ===");
+  console.log(`Total rooms: ${rooms.size}`);
+  rooms.forEach((clients, roomId) => {
+    console.log(`Room ${roomId}: ${clients.size} clients`);
+  });
+}, 30000);

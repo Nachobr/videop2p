@@ -6,6 +6,7 @@ import { useCallback, useReducer } from "react"
 import { ConnectWallet } from "@/components/connect-wallet"
 import { VideoChat } from "@/components/video-chat"
 
+
 // Define action types
 type ActionType =
   | { type: "SET_WALLET_CONNECTED"; payload: boolean }

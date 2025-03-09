@@ -12,7 +12,6 @@ interface VideoChatProps {
   onLeave: () => void
 }
 
-// Define action types for our reducer
 type ActionType =
   | { type: "SET_LOCAL_STREAM"; payload: MediaStream | null }
   | { type: "SET_AUDIO_ENABLED"; payload: boolean }
@@ -21,7 +20,6 @@ type ActionType =
   | { type: "REMOVE_PEER"; payload: string }
   | { type: "RESET" }
 
-// Define our state interface
 interface State {
   localStream: MediaStream | null
   isAudioEnabled: boolean
@@ -29,7 +27,6 @@ interface State {
   peers: Map<string, MediaStream>
 }
 
-// Initial state
 const initialState: State = {
   localStream: null,
   isAudioEnabled: true,
@@ -37,7 +34,6 @@ const initialState: State = {
   peers: new Map(),
 }
 
-// Reducer function for more predictable state updates
 function reducer(state: State, action: ActionType): State {
   switch (action.type) {
     case "SET_LOCAL_STREAM":
@@ -46,16 +42,14 @@ function reducer(state: State, action: ActionType): State {
       return { ...state, isAudioEnabled: action.payload }
     case "SET_VIDEO_ENABLED":
       return { ...state, isVideoEnabled: action.payload }
-    case "ADD_PEER": {
+    case "ADD_PEER":
       const newPeers = new Map(state.peers)
       newPeers.set(action.payload.id, action.payload.stream)
       return { ...state, peers: newPeers }
-    }
-    case "REMOVE_PEER": {
+    case "REMOVE_PEER":
       const newPeers = new Map(state.peers)
       newPeers.delete(action.payload)
       return { ...state, peers: newPeers }
-    }
     case "RESET":
       return initialState
     default:
@@ -64,256 +58,173 @@ function reducer(state: State, action: ActionType): State {
 }
 
 export function VideoChat({ roomId, walletAddress, onLeave }: VideoChatProps) {
-
   const [state, dispatch] = useReducer(reducer, initialState)
   const localVideoRef = useRef<HTMLVideoElement>(null)
   const peerConnections = useRef<Map<string, RTCPeerConnection>>(new Map())
+  const wsRef = useRef<WebSocket | null>(null)
   const isMounted = useRef(true)
 
-  // Initialize media stream
+  const SIGNALING_SERVER_URL = process.env.NEXT_PUBLIC_SIGNALING_SERVER_URL || "ws://localhost:8080"
+
   useEffect(() => {
-    console.log("VideoChat: Initializing media stream")
+    console.log("VideoChat: Initializing")
 
     let localMediaStream: MediaStream | null = null
 
-    const initMedia = async () => {
+    const initMediaAndSignaling = async () => {
       try {
-        // Try to get user media with both audio and video
-        const stream = await navigator.mediaDevices
-          .getUserMedia({
-            audio: true,
-            video: true,
-          })
-          .catch(async () => {
-            console.log("VideoChat: Failed to get video+audio, trying audio only")
-            // If that fails, try audio only
-            return await navigator.mediaDevices
-              .getUserMedia({
-                audio: true,
-              })
-              .catch(() => {
-                console.log("VideoChat: Failed to get audio only")
-                toast.error("Media Error", {
-                  description: "Could not access your camera or microphone."
-                })
-                return null
-              })
-          })
+        // Get local stream
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true }).catch(() => {
+          toast.error("Media Error", { description: "Could not access camera or microphone." })
+          return null
+        })
 
         if (!stream || !isMounted.current) {
-          if (stream) stream.getTracks().forEach((track) => track.stop())
+          stream?.getTracks().forEach(track => track.stop())
           return
         }
 
         localMediaStream = stream
-        console.log("VideoChat: Got media stream:", stream.id)
-
-        // Update state with the new stream
         dispatch({ type: "SET_LOCAL_STREAM", payload: stream })
-
-        // Set initial audio/video state
-        dispatch({
-          type: "SET_AUDIO_ENABLED",
-          payload: stream.getAudioTracks().length > 0 && stream.getAudioTracks()[0].enabled,
-        })
-        dispatch({
-          type: "SET_VIDEO_ENABLED",
-          payload: stream.getVideoTracks().length > 0 && stream.getVideoTracks()[0].enabled,
-        })
-
-        // Set video element source
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream
+          localVideoRef.current.play().catch(e => console.error("Play failed:", e))
+        }
+        dispatch({ type: "SET_AUDIO_ENABLED", payload: stream.getAudioTracks().length > 0 })
+        dispatch({ type: "SET_VIDEO_ENABLED", payload: stream.getVideoTracks().length > 0 })
+
+        // Initialize WebSocket
+        wsRef.current = new WebSocket(SIGNALING_SERVER_URL)
+        const ws = wsRef.current
+
+        ws.onopen = () => {
+          console.log("WebSocket connected")
+          ws.send(JSON.stringify({ type: "join", roomId, from: walletAddress }))
         }
 
-        // Create a demo peer for testing
-        setTimeout(() => {
-          if (isMounted.current) {
-            console.log("VideoChat: Adding demo peer")
-            dispatch({
-              type: "ADD_PEER",
-              payload: { id: "demo-peer-1", stream },
-            })
+        ws.onmessage = async (event) => {
+          const data = JSON.parse(event.data)
+          const { type, from, to, sdp, candidate } = data
+
+          if (type === "offer" && to === walletAddress) {
+            const pc = createPeerConnection(from, stream)
+            await pc.setRemoteDescription(new RTCSessionDescription(sdp))
+            const answer = await pc.createAnswer()
+            await pc.setLocalDescription(answer)
+            ws.send(JSON.stringify({ type: "answer", sdp: answer, to: from, from: walletAddress, roomId }))
+          } else if (type === "answer" && to === walletAddress) {
+            const pc = peerConnections.current.get(from)
+            if (pc) await pc.setRemoteDescription(new RTCSessionDescription(sdp))
+          } else if (type === "candidate" && to === walletAddress) {
+            const pc = peerConnections.current.get(from)
+            if (pc) await pc.addIceCandidate(new RTCIceCandidate(candidate))
           }
-        }, 2000)
+        }
+
+        ws.onerror = (error) => console.error("WebSocket error:", error)
+        ws.onclose = () => console.log("WebSocket closed")
+
+        // Create offer for peers in the room
+        const pc = createPeerConnection(`${walletAddress}-initiator`, stream)
+        const offer = await pc.createOffer()
+        await pc.setLocalDescription(offer)
+        ws.send(JSON.stringify({ type: "offer", sdp: offer, from: walletAddress, roomId }))
       } catch (error) {
-        // Line 141-145: Update error toast
-        console.error("VideoChat: Error initializing media:", error)
-        toast.error("Media Error", {
-          description: "Failed to initialize media. Please try again."
-        })
-
-        // Line 195-199: Update no audio toast
-        toast.error("No Audio", {
-          description: "No audio track available."
-        })
-
-        // Line 219-223: Update no video toast
-        toast.error("No Video", {
-          description: "No video track available."
-        })
-
-        // Line 232-236: Update screen sharing toast
-        toast.error("Screen Sharing Unavailable", {
-          description: "Screen sharing is not available in this environment."
-        })
-
-        // Line 252-255: Update room ID copied toast
-        toast.success("Room ID Copied", {
-          description: "Share this with others to invite them."
-        })
-
-        // Line 258-262: Update copy failed toast
-        toast.error("Copy Failed", {
-          description: `Please copy manually: ${roomId}`
-        })
+        console.error("Error initializing:", error)
+        toast.error("Initialization Error", { description: "Failed to start video chat." })
       }
     }
 
-    initMedia()
+    const createPeerConnection = (peerId: string, stream: MediaStream) => {
+      const pc = new RTCPeerConnection({
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+      })
+      stream.getTracks().forEach(track => pc.addTrack(track, stream))
 
-    // Cleanup function
+      pc.onicecandidate = (event) => {
+        if (event.candidate && wsRef.current) {
+          wsRef.current.send(JSON.stringify({
+            type: "candidate",
+            candidate: event.candidate,
+            to: peerId,
+            from: walletAddress,
+            roomId,
+          }))
+        }
+      }
+
+      pc.ontrack = (event) => {
+        if (isMounted.current) {
+          dispatch({ type: "ADD_PEER", payload: { id: peerId, stream: event.streams[0] } })
+        }
+      }
+
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === "disconnected" || pc.connectionState === "failed") {
+          dispatch({ type: "REMOVE_PEER", payload: peerId })
+          peerConnections.current.delete(peerId)
+        }
+      }
+
+      peerConnections.current.set(peerId, pc)
+      return pc
+    }
+
+    initMediaAndSignaling()
+
     return () => {
       console.log("VideoChat: Cleaning up")
       isMounted.current = false
-
-      // Stop all tracks in the local stream
-      if (localMediaStream) {
-        localMediaStream.getTracks().forEach((track) => {
-          try {
-            track.stop()
-          } catch (e) {
-            console.error("VideoChat: Error stopping track:", e)
-          }
-        })
-      }
-
-      // Close all peer connections
-      peerConnections.current.forEach((pc) => {
-        try {
-          pc.close()
-        } catch (e) {
-          console.error("VideoChat: Error closing peer connection:", e)
-        }
-      })
+      if (localMediaStream) localMediaStream.getTracks().forEach(track => track.stop())
+      peerConnections.current.forEach(pc => pc.close())
       peerConnections.current.clear()
-
-      // Reset state
+      if (wsRef.current) wsRef.current.close()
       dispatch({ type: "RESET" })
     }
-  }, [toast])
+  }, [roomId, walletAddress])
 
-  // Toggle audio
   const toggleAudio = () => {
     if (!state.localStream) return
-
-    try {
-      const audioTracks = state.localStream.getAudioTracks()
-      if (audioTracks.length > 0) {
-        const newEnabled = !state.isAudioEnabled
-        audioTracks.forEach((track) => {
-          track.enabled = newEnabled
-        })
-        dispatch({ type: "SET_AUDIO_ENABLED", payload: newEnabled })
-      } else {
-        toast.error("No Video", {
-          description: "No video track available."
-        })
-      }
-    } catch (error) {
-      console.error("VideoChat: Error toggling audio:", error)
+    const audioTracks = state.localStream.getAudioTracks()
+    if (audioTracks.length > 0) {
+      const newEnabled = !state.isAudioEnabled
+      audioTracks.forEach(track => (track.enabled = newEnabled))
+      dispatch({ type: "SET_AUDIO_ENABLED", payload: newEnabled })
+    } else {
+      toast.error("No Audio", { description: "No audio track available." })
     }
   }
 
-  // Toggle video
   const toggleVideo = () => {
     if (!state.localStream) return
-
-    try {
-      const videoTracks = state.localStream.getVideoTracks()
-      if (videoTracks.length > 0) {
-        const newEnabled = !state.isVideoEnabled
-        videoTracks.forEach((track) => {
-          track.enabled = newEnabled
-        })
-        dispatch({ type: "SET_VIDEO_ENABLED", payload: newEnabled })
-      } else {
-        toast.error("Screen Sharing Unavailable", {
-          description: "Screen sharing is not available in this environment."
-        })
-      }
-    } catch (error) {
-      console.error("VideoChat: Error toggling video:", error)
+    const videoTracks = state.localStream.getVideoTracks()
+    if (videoTracks.length > 0) {
+      const newEnabled = !state.isVideoEnabled
+      videoTracks.forEach(track => (track.enabled = newEnabled))
+      dispatch({ type: "SET_VIDEO_ENABLED", payload: newEnabled })
+    } else {
+      toast.error("No Video", { description: "No video track available." })
     }
   }
 
-  // Screen sharing (disabled)
   const toggleScreenShare = () => {
-    toast.error("Screen Sharing Unavailable", {
-      description: "Screen sharing is not available in this environment."
-    })
+    toast.error("Screen Sharing Unavailable", { description: "Not implemented yet." })
   }
 
-  // Copy room ID
   const copyRoomId = () => {
-    if (!navigator.clipboard) {
-      toast.error("Copy Failed", {
-        description: `Please copy manually: ${roomId}`,
-
-      })
-      return
-    }
-
-    navigator.clipboard
-      .writeText(roomId)
-      .then(() => {
-        toast.success("Room ID Copied", {
-          description: "Share this with others to invite them."
-        })
-      })
-      .catch(() => {
-        toast.error("Copy Failed", {
-          description: `Please copy manually: ${roomId}`
-        })
-      })
+    navigator.clipboard.writeText(roomId)
+      .then(() => toast.success("Room ID Copied", { description: "Share this with others." }))
+      .catch(() => toast.error("Copy Failed", { description: `Copy manually: ${roomId}` }))
   }
 
-  // Leave room
   const leaveRoom = () => {
     console.log("VideoChat: Leaving room")
-
-    try {
-      // Stop all tracks in the local stream
-      if (state.localStream) {
-        state.localStream.getTracks().forEach((track) => {
-          try {
-            track.stop()
-          } catch (e) {
-            console.error("VideoChat: Error stopping track:", e)
-          }
-        })
-      }
-
-      // Close all peer connections
-      peerConnections.current.forEach((pc) => {
-        try {
-          pc.close()
-        } catch (e) {
-          console.error("VideoChat: Error closing peer connection:", e)
-        }
-      })
-      peerConnections.current.clear()
-
-      // Reset state
-      dispatch({ type: "RESET" })
-
-      // Call onLeave callback
-      onLeave()
-    } catch (error) {
-      console.error("VideoChat: Error leaving room:", error)
-      // Still try to leave
-      onLeave()
-    }
+    if (state.localStream) state.localStream.getTracks().forEach(track => track.stop())
+    peerConnections.current.forEach(pc => pc.close())
+    peerConnections.current.clear()
+    if (wsRef.current) wsRef.current.close()
+    dispatch({ type: "RESET" })
+    onLeave()
   }
 
   return (
@@ -330,16 +241,7 @@ export function VideoChat({ roomId, walletAddress, onLeave }: VideoChatProps) {
         </Button>
       </div>
 
-      <div
-        className={`grid gap-4 mb-4 flex-1 ${state.peers.size === 0
-          ? "grid-cols-1"
-          : state.peers.size === 1
-            ? "grid-cols-1 sm:grid-cols-2"
-            : state.peers.size <= 3
-              ? "grid-cols-1 sm:grid-cols-2"
-              : "grid-cols-1 sm:grid-cols-2 md:grid-cols-3"
-          }`}
-      >
+      <div className={`grid gap-4 mb-4 flex-1 ${state.peers.size === 0 ? "grid-cols-1" : state.peers.size === 1 ? "grid-cols-1 sm:grid-cols-2" : state.peers.size <= 3 ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1 sm:grid-cols-2 md:grid-cols-3"}`}>
         <Card className="overflow-hidden bg-muted">
           <CardContent className="p-0 relative aspect-video">
             {state.localStream ? (
@@ -357,15 +259,10 @@ export function VideoChat({ roomId, walletAddress, onLeave }: VideoChatProps) {
           <Card key={peerId} className="overflow-hidden bg-muted">
             <CardContent className="p-0 relative aspect-video">
               <video
-                key={`${peerId}-video`}
                 autoPlay
                 playsInline
                 className="w-full h-full object-cover"
-                ref={(el) => {
-                  if (el && el.srcObject !== stream) {
-                    el.srcObject = stream
-                  }
-                }}
+                ref={(el) => el && (el.srcObject = stream)}
               />
               <div className="absolute bottom-2 left-2 bg-background/80 px-2 py-1 rounded text-xs">
                 Peer ({peerId.substring(0, 8)})
@@ -376,38 +273,15 @@ export function VideoChat({ roomId, walletAddress, onLeave }: VideoChatProps) {
       </div>
 
       <div className="flex justify-center flex-wrap gap-2 p-2 sm:p-4 bg-muted rounded-lg">
-        <Button
-          variant={state.isAudioEnabled ? "default" : "destructive"}
-          size="icon"
-          onClick={toggleAudio}
-          className="h-10 w-10 sm:h-12 sm:w-12"
-          disabled={!state.localStream || state.localStream.getAudioTracks().length === 0}
-        >
-          {state.isAudioEnabled ? (
-            <Mic className="h-4 w-4 sm:h-5 sm:w-5" />
-          ) : (
-            <MicOff className="h-4 w-4 sm:h-5 sm:w-5" />
-          )}
+        <Button variant={state.isAudioEnabled ? "default" : "destructive"} size="icon" onClick={toggleAudio} className="h-10 w-10 sm:h-12 sm:w-12" disabled={!state.localStream || state.localStream.getAudioTracks().length === 0}>
+          {state.isAudioEnabled ? <Mic className="h-4 w-4 sm:h-5 sm:w-5" /> : <MicOff className="h-4 w-4 sm:h-5 sm:w-5" />}
         </Button>
-
-        <Button
-          variant={state.isVideoEnabled ? "default" : "destructive"}
-          size="icon"
-          onClick={toggleVideo}
-          className="h-10 w-10 sm:h-12 sm:w-12"
-          disabled={!state.localStream || state.localStream.getVideoTracks().length === 0}
-        >
-          {state.isVideoEnabled ? (
-            <Video className="h-4 w-4 sm:h-5 sm:w-5" />
-          ) : (
-            <VideoOff className="h-4 w-4 sm:h-5 sm:w-5" />
-          )}
+        <Button variant={state.isVideoEnabled ? "default" : "destructive"} size="icon" onClick={toggleVideo} className="h-10 w-10 sm:h-12 sm:w-12" disabled={!state.localStream || state.localStream.getVideoTracks().length === 0}>
+          {state.isVideoEnabled ? <Video className="h-4 w-4 sm:h-5 sm:w-5" /> : <VideoOff className="h-4 w-4 sm:h-5 sm:w-5" />}
         </Button>
-
         <Button variant="outline" size="icon" onClick={toggleScreenShare} className="h-10 w-10 sm:h-12 sm:w-12">
           <Monitor className="h-4 w-4 sm:h-5 sm:w-5" />
         </Button>
-
         <Button variant="destructive" size="icon" onClick={leaveRoom} className="h-10 w-10 sm:h-12 sm:w-12">
           <Phone className="h-4 w-4 sm:h-5 sm:w-5" />
         </Button>
@@ -415,4 +289,3 @@ export function VideoChat({ roomId, walletAddress, onLeave }: VideoChatProps) {
     </div>
   )
 }
-

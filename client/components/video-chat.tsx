@@ -320,7 +320,7 @@ export function VideoChat({ roomId, walletAddress, onLeave }: VideoChatProps) {
                     </Button>
                     {isMobileBrowser() && (
                       <p className="text-xs text-muted-foreground mt-2">
-                        If the camera doesn't work, check your browser settings to allow camera and microphone access.
+                        If the camera doesn&apos;t work, check your browser settings to allow camera and microphone access.
                       </p>
                     )}
                   </>

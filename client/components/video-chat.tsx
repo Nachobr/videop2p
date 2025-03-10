@@ -6,6 +6,15 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Copy, Mic, MicOff, Monitor, Phone, Video, VideoOff, X } from "lucide-react"
 import { toast } from "@/components/ui/toast"
 
+const checkMediaDevicesSupport = () => {
+  return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+};
+
+const isMobileBrowser = () => {
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+};
+
+
 interface VideoChatProps {
   roomId: string
   walletAddress: string
@@ -68,19 +77,29 @@ export function VideoChat({ roomId, walletAddress, onLeave }: VideoChatProps) {
   const localMediaStreamRef = useRef<MediaStream | null>(null)
   const isInitializing = useRef(false)
 
-  const SIGNALING_SERVER_URL = process.env.NEXT_PUBLIC_SIGNALING_SERVER_URL || "ws://localhost:8080"
+  const SIGNALING_SERVER_URL = process.env.NEXT_PUBLIC_SIGNALING_SERVER_URL || "wss://localhost:8080";
   console.log("VideoChat: Using SIGNALING_SERVER_URL:", SIGNALING_SERVER_URL)
 
+  // In initMedia function, add mobile-specific constraints
   const initMedia = useCallback(async () => {
     if (localMediaStreamRef.current || isInitializing.current) {
       console.log("VideoChat: Stream already acquired or initializing")
       return localMediaStreamRef.current
     }
-
+  
     isInitializing.current = true
     try {
       console.log("VideoChat: Requesting media stream")
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true })
+      const constraints = {
+        audio: true,
+        video: {
+          facingMode: 'user', // Use front camera by default
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          aspectRatio: { ideal: 1.7777777778 }
+        }
+      }
+      const stream = await navigator.mediaDevices.getUserMedia(constraints)
       console.log("VideoChat: Got media stream:", stream.id)
       console.log("VideoChat: Audio track enabled:", stream.getAudioTracks()[0]?.enabled)
       console.log("VideoChat: Video track enabled:", stream.getVideoTracks()[0]?.enabled)
@@ -288,11 +307,24 @@ export function VideoChat({ roomId, walletAddress, onLeave }: VideoChatProps) {
                 style={{ backgroundColor: "#000" }}
               />
             ) : (
-              <div className="flex flex-col items-center justify-center w-full h-full gap-2">
-                <p className="text-muted-foreground">Loading camera...</p>
-                <Button variant="outline" onClick={initMedia}>
-                  Request Camera Access
-                </Button>
+              <div className="flex flex-col items-center justify-center w-full h-full gap-2 p-4 text-center">
+                <p className="text-muted-foreground">
+                  {!checkMediaDevicesSupport() 
+                    ? "Camera access not available in this browser. Please use Chrome or Safari."
+                    : "Waiting for camera access..."}
+                </p>
+                {checkMediaDevicesSupport() && (
+                  <>
+                    <Button variant="outline" onClick={initMedia}>
+                      Allow Camera & Microphone
+                    </Button>
+                    {isMobileBrowser() && (
+                      <p className="text-xs text-muted-foreground mt-2">
+                        If the camera doesn't work, check your browser settings to allow camera and microphone access.
+                      </p>
+                    )}
+                  </>
+                )}
               </div>
             )}
             <div className="absolute bottom-2 left-2 bg-background/80 px-2 py-1 rounded text-xs">You</div>

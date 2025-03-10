@@ -3,7 +3,7 @@
 import type React from "react"
 
 import { useCallback, useReducer } from "react"
-import { ConnectWallet } from "@/components/connect-wallet"
+import { ConnectGoogle } from "@/components/connect-wallet"
 import { VideoChat } from "@/components/video-chat"
 
 
@@ -64,10 +64,10 @@ export default function Home() {
 
   console.log("Home: Current state:", state)
 
-  const handleWalletConnect = useCallback((address: string) => {
-    console.log("Home: Wallet connected:", address)
+  const handleGoogleConnect = useCallback((email: string) => {
+    console.log("Home: Google account connected:", email)
     dispatch({ type: "SET_WALLET_CONNECTED", payload: true })
-    dispatch({ type: "SET_WALLET_ADDRESS", payload: address })
+    dispatch({ type: "SET_WALLET_ADDRESS", payload: email }) // Use email instead of wallet address
   }, [])
 
   const createRoom = useCallback(() => {
@@ -125,7 +125,7 @@ export default function Home() {
       <div className="z-10 max-w-5xl w-full items-center justify-between text-sm flex">
         <h1 className="text-2xl font-bold">Web3 Video Chat</h1>
         <div className="flex items-center gap-4">
-          <ConnectWallet onConnect={handleWalletConnect} />
+          <ConnectGoogle onConnect={handleGoogleConnect}/>
         </div>
       </div>
 

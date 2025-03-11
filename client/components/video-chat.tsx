@@ -17,7 +17,8 @@ const isMobileBrowser = () => {
 
 interface VideoChatProps {
   roomId: string
-  walletAddress: string
+  userIdentifier: string
+  authMethod: "username" | "google" | "wallet"
   onLeave: () => void
 }
 
@@ -68,7 +69,7 @@ function reducer(state: State, action: ActionType): State {
   }
 }
 
-export function VideoChat({ roomId, walletAddress, onLeave }: VideoChatProps) {
+export function VideoChat({ roomId, userIdentifier, authMethod, onLeave }: VideoChatProps) {
   const [state, dispatch] = useReducer(reducer, initialState)
   const localVideoRef = useRef<HTMLVideoElement>(null)
   const peerConnections = useRef<Map<string, RTCPeerConnection>>(new Map())
@@ -79,6 +80,7 @@ export function VideoChat({ roomId, walletAddress, onLeave }: VideoChatProps) {
 
   const SIGNALING_SERVER_URL = process.env.NEXT_PUBLIC_SIGNALING_SERVER_URL || "wss://localhost:8080";
   console.log("VideoChat: Using SIGNALING_SERVER_URL:", SIGNALING_SERVER_URL)
+  console.log("VideoChat: Auth method:", authMethod, "User identifier:", userIdentifier)
 
   // In initMedia function, add mobile-specific constraints
   const initMedia = useCallback(async () => {
@@ -86,7 +88,7 @@ export function VideoChat({ roomId, walletAddress, onLeave }: VideoChatProps) {
       console.log("VideoChat: Stream already acquired or initializing")
       return localMediaStreamRef.current
     }
-  
+
     isInitializing.current = true
     try {
       console.log("VideoChat: Requesting media stream")
@@ -125,7 +127,14 @@ export function VideoChat({ roomId, walletAddress, onLeave }: VideoChatProps) {
 
     pc.onicecandidate = (event) => {
       if (event.candidate && wsRef.current) {
-        wsRef.current.send(JSON.stringify({ type: "candidate", candidate: event.candidate, to: peerId, from: walletAddress, roomId }))
+        wsRef.current.send(JSON.stringify({ 
+          type: "candidate", 
+          candidate: event.candidate, 
+          to: peerId, 
+          from: userIdentifier, 
+          authMethod: authMethod,
+          roomId 
+        }))
       }
     }
 
@@ -145,56 +154,109 @@ export function VideoChat({ roomId, walletAddress, onLeave }: VideoChatProps) {
 
     peerConnections.current.set(peerId, pc)
     return pc
-  }, [walletAddress, roomId])
+  }, [userIdentifier, authMethod, roomId])
 
+  // Fix the setupWebSocketConnection function to properly handle peer connections
   const setupWebSocketConnection = useCallback((stream: MediaStream) => {
     if (wsRef.current) {
       console.log("VideoChat: Closing existing WebSocket")
       wsRef.current.close()
     }
-
+  
     console.log("VideoChat: Attempting WebSocket connection to:", SIGNALING_SERVER_URL)
     wsRef.current = new WebSocket(SIGNALING_SERVER_URL)
     const ws = wsRef.current
-
+  
     ws.onopen = () => {
       console.log("VideoChat: WebSocket connected")
-      ws.send(JSON.stringify({ type: "join", roomId, from: walletAddress }))
+      ws.send(JSON.stringify({
+        type: "join",
+        roomId,
+        from: userIdentifier,
+        authMethod: authMethod
+      }))
     }
-
+  
     ws.onmessage = async (event) => {
       console.log("VideoChat: WebSocket message:", event.data)
       const data = JSON.parse(event.data)
-      const { type, from, to, sdp, candidate } = data
-
-      if (type === "offer" && to === walletAddress) {
-        const pc = createPeerConnection(from, stream)
+      const { type, from, to, sdp, candidate, peers } = data
+  
+      // Handle new user list from server
+      if (type === "users" && Array.isArray(peers)) {
+        console.log("VideoChat: Received users in room:", peers)
+        // Initiate connections to all peers that aren't us
+        peers.forEach(peerId => {
+          if (peerId !== userIdentifier && !peerConnections.current.has(peerId)) {
+            console.log("VideoChat: Initiating connection to peer:", peerId)
+            const pc = createPeerConnection(peerId, stream)
+            pc.createOffer()
+              .then(offer => pc.setLocalDescription(offer))
+              .then(() => {
+                ws.send(JSON.stringify({
+                  type: "offer",
+                  sdp: pc.localDescription,
+                  to: peerId,
+                  from: userIdentifier,
+                  authMethod: authMethod,
+                  roomId
+                }))
+              })
+              .catch(e => console.error("VideoChat: Error creating offer for peer:", peerId, e))
+          }
+        })
+      }
+      // Handle offer from another peer
+      else if (type === "offer" && to === userIdentifier) {
+        console.log("VideoChat: Received offer from:", from)
+        // Only create a new connection if one doesn't exist
+        let pc = peerConnections.current.get(from)
+        if (!pc) {
+          pc = createPeerConnection(from, stream)
+        }
         await pc.setRemoteDescription(new RTCSessionDescription(sdp))
         const answer = await pc.createAnswer()
         await pc.setLocalDescription(answer)
-        ws.send(JSON.stringify({ type: "answer", sdp: answer, to: from, from: walletAddress, roomId }))
-      } else if (type === "answer" && to === walletAddress) {
+        ws.send(JSON.stringify({
+          type: "answer",
+          sdp: answer,
+          to: from,
+          from: userIdentifier,
+          authMethod: authMethod,
+          roomId
+        }))
+      } 
+      // Handle answer to our offer
+      else if (type === "answer" && to === userIdentifier) {
+        console.log("VideoChat: Received answer from:", from)
         const pc = peerConnections.current.get(from)
-        if (pc) await pc.setRemoteDescription(new RTCSessionDescription(sdp))
-      } else if (type === "candidate" && to === walletAddress) {
+        if (pc) {
+          await pc.setRemoteDescription(new RTCSessionDescription(sdp))
+        } else {
+          console.warn("VideoChat: Received answer but no connection exists for:", from)
+        }
+      } 
+      // Handle ICE candidate
+      else if (type === "candidate" && to === userIdentifier) {
+        console.log("VideoChat: Received ICE candidate from:", from)
         const pc = peerConnections.current.get(from)
-        if (pc) await pc.addIceCandidate(new RTCIceCandidate(candidate))
+        if (pc) {
+          await pc.addIceCandidate(new RTCIceCandidate(candidate))
+        } else {
+          console.warn("VideoChat: Received candidate but no connection exists for:", from)
+        }
       }
     }
-
+  
     ws.onerror = (error) => console.error("VideoChat: WebSocket error:", error)
     ws.onclose = () => console.log("VideoChat: WebSocket closed")
-
-    const pc = createPeerConnection(`${walletAddress}-initiator`, stream)
-    pc.createOffer()
-      .then(offer => pc.setLocalDescription(offer))
-      .then(() => ws.send(JSON.stringify({ type: "offer", sdp: pc.localDescription, from: walletAddress, roomId })))
-      .catch(e => console.error("VideoChat: Error creating offer:", e))
-  }, [roomId, walletAddress, SIGNALING_SERVER_URL, createPeerConnection])
+  
+    // Don't create an offer here - wait for the server to send the user list
+  }, [roomId, userIdentifier, authMethod, SIGNALING_SERVER_URL, createPeerConnection])
 
   // Effect to initialize media
   useEffect(() => {
-    console.log("VideoChat: Mounting with roomId:", roomId, "walletAddress:", walletAddress)
+    console.log("VideoChat: Mounting with roomId:", roomId, "userIdentifier:", userIdentifier)
     let isActive = true
 
     const initialize = async () => {
@@ -215,7 +277,7 @@ export function VideoChat({ roomId, walletAddress, onLeave }: VideoChatProps) {
       console.log("VideoChat: Unmounting")
       isActive = false
     }
-  }, [initMedia, setupWebSocketConnection, roomId, walletAddress])
+  }, [initMedia, setupWebSocketConnection, roomId, userIdentifier])
 
   // Effect to handle video playback
   useEffect(() => {
@@ -301,7 +363,7 @@ export function VideoChat({ roomId, walletAddress, onLeave }: VideoChatProps) {
               <video
                 ref={localVideoRef}
                 autoPlay
-                muted
+                //muted
                 playsInline
                 className="w-full h-full object-cover"
                 style={{ backgroundColor: "#000" }}
@@ -309,7 +371,7 @@ export function VideoChat({ roomId, walletAddress, onLeave }: VideoChatProps) {
             ) : (
               <div className="flex flex-col items-center justify-center w-full h-full gap-2 p-4 text-center">
                 <p className="text-muted-foreground">
-                  {!checkMediaDevicesSupport() 
+                  {!checkMediaDevicesSupport()
                     ? "Camera access not available in this browser. Please use Chrome or Safari."
                     : "Waiting for camera access..."}
                 </p>

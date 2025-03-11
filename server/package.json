@@ -1,19 +1,17 @@
 {
-  "name": "signaling-server",
+  "name": "videop2p-server",
   "version": "1.0.0",
-  "main": "dist/server.js",
+  "description": "WebSocket signaling server for VideoP2P",
+  "main": "src/server.js",
   "scripts": {
-    "build": "tsc",
-    "start": "node dist/server.js",
-    "dev": "tsc --watch & nodemon dist/server.js"
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js"
   },
   "dependencies": {
-    "ws": "^8.18.0"
+    "express": "^4.21.2",
+    "ws": "^8.18.1"
   },
   "devDependencies": {
-    "@types/node": "^20.11.0",
-    "@types/ws": "^8.5.10",
-    "nodemon": "^3.0.2",
-    "typescript": "^5.3.3"
+    "nodemon": "^3.1.0"
   }
 }

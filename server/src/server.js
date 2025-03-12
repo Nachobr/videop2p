@@ -32,117 +32,97 @@ const httpPort = process.env.HTTP_PORT || 8081;
 const httpsServer = https.createServer(sslOptions);
 const httpServer = http.createServer();
 
+// Create WebSocket servers
+const wssHttps = new WebSocket.Server({ server: httpsServer });
+const wssHttp = new WebSocket.Server({ server: httpServer });
+
 // Store connected clients by room
 const rooms = new Map();
 
-// Create WebSocket servers over both HTTP and HTTPS
-const wssHttps = new WebSocket.Server({
-  server: httpsServer,
-  // Add these options for better cross-origin support
-  perMessageDeflate: false,
-  clientTracking: true,
-});
-
-const wssHttp = new WebSocket.Server({
-  server: httpServer,
-  perMessageDeflate: false,
-  clientTracking: true,
-});
-
-// Function to handle WebSocket connections
+// Handle WebSocket connections
 const handleConnection = (ws) => {
-  console.log("New client connected", new Date().toISOString());
+  console.log('Client connected');
+  let clientId = null;
+  let clientRoom = null;
 
-  ws.on("message", (message) => {
+  ws.on('message', (message) => {
     try {
       const data = JSON.parse(message);
-      console.log(`Received message type: ${data.type}`);
-
-      // Handle different message types
-      switch (data.type) {
-        case "join":
-          handleJoin(ws, data);
-          break;
-        case "offer":
-        case "answer":
-        case "candidate":
-          forwardMessage(ws, data);
-          break;
-        default:
-          console.log(`Unknown message type: ${data.type}`);
+      console.log('Received message:', data);
+      
+      if (data.type === 'join') {
+        clientId = data.from;
+        clientRoom = data.roomId;
+        
+        // Create room if it doesn't exist
+        if (!rooms.has(clientRoom)) {
+          rooms.set(clientRoom, new Map());
+        }
+        
+        // Add client to room
+        const room = rooms.get(clientRoom);
+        room.set(clientId, ws);
+        
+        console.log(`Client ${clientId} joined room ${clientRoom}`);
+        console.log(`Room ${clientRoom} now has ${room.size} clients`);
+        
+        // Send the list of all users in the room to everyone
+        const peers = Array.from(room.keys());
+        const usersMessage = JSON.stringify({
+          type: 'users',
+          peers: peers,
+          roomId: clientRoom
+        });
+        
+        // Broadcast to all clients in the room
+        room.forEach((client) => {
+          if (client.readyState === WebSocket.OPEN) {
+            client.send(usersMessage);
+          }
+        });
+      } else if (data.type === 'offer' || data.type === 'answer' || data.type === 'candidate') {
+        // Forward the message to the specified recipient
+        const room = rooms.get(data.roomId);
+        if (room && room.has(data.to)) {
+          const recipient = room.get(data.to);
+          if (recipient.readyState === WebSocket.OPEN) {
+            recipient.send(message.toString());
+          }
+        }
       }
     } catch (error) {
-      console.error("Error parsing message:", error);
+      console.error('Error processing message:', error);
     }
   });
 
-  ws.on("close", () => {
-    console.log("Client disconnected");
-    // Remove client from rooms
-    for (const [roomId, clients] of rooms.entries()) {
-      const index = clients.findIndex((client) => client.ws === ws);
-      if (index !== -1) {
-        const client = clients[index];
-        clients.splice(index, 1);
-        console.log(`Client ${client.id} removed from room ${roomId}`);
+  // When a client disconnects
+  ws.on('close', () => {
+    console.log('Client disconnected');
+    if (clientId && clientRoom && rooms.has(clientRoom)) {
+      const room = rooms.get(clientRoom);
+      room.delete(clientId);
+      
+      // If room is empty, delete it
+      if (room.size === 0) {
+        rooms.delete(clientRoom);
+        console.log(`Room ${clientRoom} deleted (empty)`);
+      } else {
+        // Notify remaining clients about the disconnection
+        const peers = Array.from(room.keys());
+        const usersMessage = JSON.stringify({
+          type: 'users',
+          peers: peers,
+          roomId: clientRoom
+        });
         
-        // Notify other clients in the room
-        clients.forEach((otherClient) => {
-          otherClient.ws.send(JSON.stringify({
-            type: "user-disconnected",
-            userId: client.id,
-          }));
+        room.forEach((client) => {
+          if (client.readyState === WebSocket.OPEN) {
+            client.send(usersMessage);
+          }
         });
       }
     }
   });
-};
-
-// Handle join room requests
-const handleJoin = (ws, data) => {
-  const { roomId, from } = data;
-  console.log(`Client ${from} joining room ${roomId}`);
-
-  // Create room if it doesn't exist
-  if (!rooms.has(roomId)) {
-    rooms.set(roomId, []);
-  }
-
-  // Add client to room
-  const clients = rooms.get(roomId);
-  clients.push({ id: from, ws });
-
-  // Notify client of existing peers
-  const existingPeers = clients
-    .filter((client) => client.id !== from)
-    .map((client) => client.id);
-
-  ws.send(JSON.stringify({
-    type: "room-joined",
-    peers: existingPeers,
-  }));
-
-  console.log(`Client ${from} joined room ${roomId}. Existing peers: ${existingPeers.join(", ")}`);
-};
-
-// Forward messages to the intended recipient
-const forwardMessage = (ws, data) => {
-  const { to, roomId } = data;
-  
-  if (!roomId || !to) {
-    console.log("Missing roomId or recipient in message");
-    return;
-  }
-
-  const clients = rooms.get(roomId) || [];
-  const recipient = clients.find((client) => client.id === to);
-
-  if (recipient) {
-    recipient.ws.send(JSON.stringify(data));
-    console.log(`Message forwarded to ${to}`);
-  } else {
-    console.log(`Recipient ${to} not found in room ${roomId}`);
-  }
 };
 
 // Apply the connection handler to both WebSocket servers

@@ -120,29 +120,58 @@ export function VideoChat({ roomId, userIdentifier, authMethod, onLeave }: Video
       throw error
     }
   }, [])
+  // Add this function to your component
+  const forceReconnect = () => {
+    console.log("VideoChat: Force reconnecting")
+    if (wsRef.current) {
+      wsRef.current.close()
+    }
+    
+    if (localMediaStreamRef.current) {
+      setupWebSocketConnection(localMediaStreamRef.current)
+    } else {
+      // Try to reinitialize media if it's not available
+      initMedia().then(stream => {
+        if (stream) setupWebSocketConnection(stream)
+      }).catch(err => console.error("VideoChat: Reconnect failed:", err))
+    }
+  }
+
+  // Modify the controls section to add a reconnect button
 
   const createPeerConnection = useCallback((peerId: string, stream: MediaStream) => {
-    const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] })
+    const pc = new RTCPeerConnection({ 
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "stun:stun1.l.google.com:19302" },
+        { urls: "stun:stun2.l.google.com:19302" },
+        { urls: "stun:stun3.l.google.com:19302" },
+        { urls: "stun:stun4.l.google.com:19302" }
+      ],
+      iceCandidatePoolSize: 10
+    })
+    
     stream.getTracks().forEach(track => pc.addTrack(track, stream))
-
+  
     pc.onicecandidate = (event) => {
       if (event.candidate && wsRef.current) {
-        wsRef.current.send(JSON.stringify({ 
-          type: "candidate", 
-          candidate: event.candidate, 
-          to: peerId, 
-          from: userIdentifier, 
+        wsRef.current.send(JSON.stringify({
+          type: "candidate",
+          candidate: event.candidate,
+          to: peerId,
+          from: userIdentifier,
           authMethod: authMethod,
-          roomId 
+          roomId
         }))
       }
     }
-
+  
     pc.ontrack = (event) => {
-      console.log("VideoChat: Adding peer:", peerId)
+      console.log("VideoChat: Received track from peer:", peerId, event.streams[0]?.id)
+      console.log("VideoChat: Track info:", event.track.kind, event.track.id, event.track.enabled)
       dispatch({ type: "ADD_PEER", payload: { id: peerId, stream: event.streams[0] } })
     }
-
+  
     pc.onconnectionstatechange = () => {
       console.log("VideoChat: Peer connection state:", pc.connectionState)
       if (pc.connectionState === "disconnected" || pc.connectionState === "failed") {
@@ -151,7 +180,7 @@ export function VideoChat({ roomId, userIdentifier, authMethod, onLeave }: Video
         peerVideoRefs.current.delete(peerId)
       }
     }
-
+  
     peerConnections.current.set(peerId, pc)
     return pc
   }, [userIdentifier, authMethod, roomId])
@@ -162,11 +191,11 @@ export function VideoChat({ roomId, userIdentifier, authMethod, onLeave }: Video
       console.log("VideoChat: Closing existing WebSocket")
       wsRef.current.close()
     }
-  
+
     console.log("VideoChat: Attempting WebSocket connection to:", SIGNALING_SERVER_URL)
     wsRef.current = new WebSocket(SIGNALING_SERVER_URL)
     const ws = wsRef.current
-  
+
     ws.onopen = () => {
       console.log("VideoChat: WebSocket connected")
       ws.send(JSON.stringify({
@@ -176,12 +205,12 @@ export function VideoChat({ roomId, userIdentifier, authMethod, onLeave }: Video
         authMethod: authMethod
       }))
     }
-  
+
     ws.onmessage = async (event) => {
       console.log("VideoChat: WebSocket message:", event.data)
       const data = JSON.parse(event.data)
       const { type, from, to, sdp, candidate, peers } = data
-  
+      console.log("VideoChat: Message type:", type, "from:", from, "to:", to)
       // Handle new user list from server
       if (type === "users" && Array.isArray(peers)) {
         console.log("VideoChat: Received users in room:", peers)
@@ -209,11 +238,7 @@ export function VideoChat({ roomId, userIdentifier, authMethod, onLeave }: Video
       // Handle offer from another peer
       else if (type === "offer" && to === userIdentifier) {
         console.log("VideoChat: Received offer from:", from)
-        // Only create a new connection if one doesn't exist
-        let pc = peerConnections.current.get(from)
-        if (!pc) {
-          pc = createPeerConnection(from, stream)
-        }
+        const pc = createPeerConnection(from, stream)
         await pc.setRemoteDescription(new RTCSessionDescription(sdp))
         const answer = await pc.createAnswer()
         await pc.setLocalDescription(answer)
@@ -225,32 +250,24 @@ export function VideoChat({ roomId, userIdentifier, authMethod, onLeave }: Video
           authMethod: authMethod,
           roomId
         }))
-      } 
+      }
       // Handle answer to our offer
       else if (type === "answer" && to === userIdentifier) {
         console.log("VideoChat: Received answer from:", from)
         const pc = peerConnections.current.get(from)
-        if (pc) {
-          await pc.setRemoteDescription(new RTCSessionDescription(sdp))
-        } else {
-          console.warn("VideoChat: Received answer but no connection exists for:", from)
-        }
-      } 
+        if (pc) await pc.setRemoteDescription(new RTCSessionDescription(sdp))
+      }
       // Handle ICE candidate
       else if (type === "candidate" && to === userIdentifier) {
         console.log("VideoChat: Received ICE candidate from:", from)
         const pc = peerConnections.current.get(from)
-        if (pc) {
-          await pc.addIceCandidate(new RTCIceCandidate(candidate))
-        } else {
-          console.warn("VideoChat: Received candidate but no connection exists for:", from)
-        }
+        if (pc) await pc.addIceCandidate(new RTCIceCandidate(candidate))
       }
     }
-  
+
     ws.onerror = (error) => console.error("VideoChat: WebSocket error:", error)
     ws.onclose = () => console.log("VideoChat: WebSocket closed")
-  
+    
     // Don't create an offer here - wait for the server to send the user list
   }, [roomId, userIdentifier, authMethod, SIGNALING_SERVER_URL, createPeerConnection])
 
@@ -289,6 +306,18 @@ export function VideoChat({ roomId, userIdentifier, authMethod, onLeave }: Video
       }).catch(e => console.error("VideoChat: Local video play failed:", e))
     }
   }, [state.localStream])
+
+  useEffect(() => {
+    // Update peer video elements when peers change
+    Array.from(state.peers.entries()).forEach(([peerId, stream]) => {
+      const videoRef = peerVideoRefs.current.get(peerId)
+      if (videoRef && videoRef.srcObject !== stream) {
+        console.log("VideoChat: Setting peer video source for:", peerId)
+        videoRef.srcObject = stream
+        videoRef.play().catch(e => console.error("VideoChat: Peer video play failed:", e))
+      }
+    })
+  }, [state.peers])
 
   const toggleAudio = () => {
     if (!state.localStream) return
@@ -363,7 +392,7 @@ export function VideoChat({ roomId, userIdentifier, authMethod, onLeave }: Video
               <video
                 ref={localVideoRef}
                 autoPlay
-                //muted
+                muted
                 playsInline
                 className="w-full h-full object-cover"
                 style={{ backgroundColor: "#000" }}
@@ -393,29 +422,36 @@ export function VideoChat({ roomId, userIdentifier, authMethod, onLeave }: Video
           </CardContent>
         </Card>
 
-        {Array.from(state.peers.entries()).map(([peerId, stream]) => (
+        {Array.from(state.peers.keys()).map(peerId => (
           <Card key={peerId} className="overflow-hidden bg-muted">
             <CardContent className="p-0 relative aspect-video">
               <video
+                ref={el => {
+                  if (el) {
+                    peerVideoRefs.current.set(peerId, el)
+                    // If we already have a stream, set it
+                    const stream = state.peers.get(peerId)
+                    if (stream && el.srcObject !== stream) {
+                      console.log("VideoChat: Setting peer video source for:", peerId, stream.id)
+                      el.srcObject = stream
+                      el.play().catch(e => console.error("VideoChat: Peer video play failed:", e))
+                    }
+                  }
+                }}
                 autoPlay
                 playsInline
                 className="w-full h-full object-cover"
-                ref={(el) => {
-                  if (el) {
-                    peerVideoRefs.current.set(peerId, el)
-                    el.srcObject = stream
-                    el.play().catch(e => console.error(`VideoChat: Failed to play peer ${peerId}:`, e))
-                  }
-                }}
+                style={{ backgroundColor: "#000" }}
               />
               <div className="absolute bottom-2 left-2 bg-background/80 px-2 py-1 rounded text-xs">
-                Peer ({peerId.substring(0, 8)})
+                {peerId}
               </div>
             </CardContent>
           </Card>
         ))}
       </div>
 
+      
       <div className="flex justify-center flex-wrap gap-2 p-2 sm:p-4 bg-muted rounded-lg">
         <Button
           variant={state.isAudioEnabled ? "default" : "destructive"}
@@ -438,6 +474,11 @@ export function VideoChat({ roomId, userIdentifier, authMethod, onLeave }: Video
         <Button variant="outline" size="icon" onClick={toggleScreenShare} className="h-10 w-10 sm:h-12 sm:w-12">
           <Monitor className="h-4 w-4 sm:h-5 sm:w-5" />
         </Button>
+        <Button variant="outline" size="icon" onClick={forceReconnect} className="h-10 w-10 sm:h-12 sm:w-12" title="Reconnect">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 sm:h-5 sm:w-5">
+            <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
+          </svg>
+        </Button>
         <Button variant="destructive" size="icon" onClick={leaveRoom} className="h-10 w-10 sm:h-12 sm:w-12">
           <Phone className="h-4 w-4 sm:h-5 sm:w-5" />
         </Button>
@@ -445,3 +486,5 @@ export function VideoChat({ roomId, userIdentifier, authMethod, onLeave }: Video
     </div>
   )
 }
+
+

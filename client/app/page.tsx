@@ -1,6 +1,6 @@
 "use client"
 
-import { useReducer, useCallback } from "react"
+import { useReducer, useCallback, useEffect } from "react"
 import { VideoChat } from "@/components/video-chat"
 import { UsernameAuth } from "@/components/UsernameAuth"
 import { GoogleAuth } from "@/components/GoogleAuth"
@@ -21,7 +21,6 @@ type ActionType =
 
 interface State {
     isAuthenticated: boolean
-    //usernameConnected: boolean
     walletConnected: boolean
     walletAddress: string
     username: string
@@ -30,12 +29,10 @@ interface State {
     inRoom: boolean
     isCreatingRoom: boolean
     isJoiningRoom: boolean
-
 }
 
 const initialState: State = {
     isAuthenticated: false,
-    //usernameConnected: false,
     walletConnected: false,
     walletAddress: "",
     username: "",
@@ -44,7 +41,6 @@ const initialState: State = {
     inRoom: false,
     isCreatingRoom: false,
     isJoiningRoom: false,
-
 }
 
 function reducer(state: State, action: ActionType): State {
@@ -97,9 +93,7 @@ export default function Home() {
         console.log("Home: Wallet connected:", address)
         dispatch({ type: "SET_WALLET_CONNECTED", payload: true })
         dispatch({ type: "SET_WALLET_ADDRESS", payload: address })
-        // Also set authenticated state when wallet connects
         dispatch({ type: "SET_USERNAME_CONNECTED", payload: true })
-        // Use wallet address as username if no username is set
         if (!state.username) {
             dispatch({ type: "SET_USERNAME", payload: `Wallet ${address.substring(0, 6)}...${address.substring(address.length - 4)}` })
         }
@@ -157,29 +151,39 @@ export default function Home() {
     }, [])
 
     const handleDisconnect = useCallback(() => {
-        console.log("Home: Disconnecting");
+        console.log("Home: Starting signout")
 
-        // Just reset the state without signing out from Firebase
-        dispatch({
-            type: "RESET",
+        // Reset the state to initial values
+        dispatch({ type: "RESET" })
 
-        });
+        // Clear local storage to prevent wallet auto-reconnect
+        localStorage.removeItem('shouldConnectWallet')
 
-        // No need to reload the page
-    }, []);
+        console.log("Home: Signout completed")
+    }, [])
 
     const handleWalletDisconnect = useCallback(() => {
-        console.log("Home: Disconnecting wallet");
-
-        // Only reset wallet-related state
-        dispatch({ type: "SET_WALLET_CONNECTED", payload: false });
-        dispatch({ type: "SET_WALLET_ADDRESS", payload: "" });
-
-        // If no username is set, also reset authentication
+        console.log("Home: Disconnecting wallet")
+        dispatch({ type: "SET_WALLET_CONNECTED", payload: false })
+        dispatch({ type: "SET_WALLET_ADDRESS", payload: "" })
         if (!state.username) {
-            dispatch({ type: "SET_USERNAME_CONNECTED", payload: false });
+            dispatch({ type: "SET_USERNAME_CONNECTED", payload: false })
         }
-    }, [state.username]);
+    }, [state.username])
+
+    // Prevent auto-reconnect after disconnect
+    useEffect(() => {
+        const shouldAutoConnect = localStorage.getItem('shouldConnectWallet') === 'true'
+        if (!shouldAutoConnect && (state.walletConnected || state.isAuthenticated)) {
+            console.log("Home: Clearing state due to no auto-connect preference")
+            dispatch({ type: "RESET" })
+        }
+    }, [state.walletConnected, state.isAuthenticated])
+
+    // Debug state changes
+    useEffect(() => {
+        console.log("Home: State updated:", state)
+    }, [state])
 
     return (
         <main className="flex min-h-screen flex-col items-center p-4 md:p-24">

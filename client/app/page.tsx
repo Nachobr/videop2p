@@ -4,8 +4,10 @@ import { useReducer, useCallback, useEffect } from "react"
 import { VideoChat } from "@/components/video-chat"
 import { UsernameAuth } from "@/components/UsernameAuth"
 import { GoogleAuth } from "@/components/GoogleAuth"
-import { WalletAuth } from "@/components/WalletAuth"
+import { CustomConnectButton } from "@/components/ui/walletconnectBtn"
+import { useAccount, useDisconnect } from "wagmi"
 import { Button } from "@/components/ui/button"
+
 
 type ActionType =
     | { type: "SET_USERNAME_CONNECTED"; payload: boolean }
@@ -71,119 +73,114 @@ function reducer(state: State, action: ActionType): State {
 }
 
 export default function Home() {
-    const [state, dispatch] = useReducer(reducer, initialState)
+    const [state, dispatch] = useReducer(reducer, initialState);
+    const { address, isConnected } = useAccount(); // Wagmi hook to get wallet info
+    const { disconnect } = useDisconnect(); // Add the disconnect hook
 
-    console.log("Home: Current state:", state)
+    // Sync wallet connection state with app state
+    useEffect(() => {
+        if (isConnected && address) {
+            console.log("Home: Wallet connected:", address);
+            dispatch({ type: "SET_WALLET_CONNECTED", payload: true });
+            dispatch({ type: "SET_WALLET_ADDRESS", payload: address });
+            dispatch({ type: "SET_USERNAME_CONNECTED", payload: true });
+            if (!state.username) {
+                dispatch({
+                    type: "SET_USERNAME",
+                    payload: `Wallet ${address.substring(0, 6)}...${address.substring(address.length - 4)}`,
+                });
+            }
+            dispatch({ type: "SET_AUTH_METHOD", payload: "wallet" });
+        } else {
+            console.log("Home: Wallet disconnected");
+            dispatch({ type: "SET_WALLET_CONNECTED", payload: false });
+            dispatch({ type: "SET_WALLET_ADDRESS", payload: "" });
+            // Only reset authentication if no other auth method is active
+            if (state.authMethod === "wallet") {
+                dispatch({ type: "SET_USERNAME_CONNECTED", payload: false });
+            }
+        }
+    }, [isConnected, address, state.username, state.authMethod]);
 
     const handleUsernameConnect = useCallback((username: string) => {
-        console.log("Home: Username connected:", username)
-        dispatch({ type: "SET_USERNAME_CONNECTED", payload: true })
-        dispatch({ type: "SET_USERNAME", payload: username })
-        dispatch({ type: "SET_AUTH_METHOD", payload: "username" })
-    }, [])
+        console.log("Home: Username connected:", username);
+        dispatch({ type: "SET_USERNAME_CONNECTED", payload: true });
+        dispatch({ type: "SET_USERNAME", payload: username });
+        dispatch({ type: "SET_AUTH_METHOD", payload: "username" });
+    }, []);
 
     const handleGoogleConnect = useCallback((email: string) => {
-        console.log("Home: Google account connected:", email)
-        dispatch({ type: "SET_USERNAME_CONNECTED", payload: true })
-        dispatch({ type: "SET_USERNAME", payload: email })
-        dispatch({ type: "SET_AUTH_METHOD", payload: "google" })
-    }, [])
-
-    const handleWalletConnect = useCallback((address: string) => {
-        console.log("Home: Wallet connected:", address)
-        dispatch({ type: "SET_WALLET_CONNECTED", payload: true })
-        dispatch({ type: "SET_WALLET_ADDRESS", payload: address })
-        dispatch({ type: "SET_USERNAME_CONNECTED", payload: true })
-        if (!state.username) {
-            dispatch({ type: "SET_USERNAME", payload: `Wallet ${address.substring(0, 6)}...${address.substring(address.length - 4)}` })
-        }
-        dispatch({ type: "SET_AUTH_METHOD", payload: "wallet" })
-    }, [state.username])
+        console.log("Home: Google account connected:", email);
+        dispatch({ type: "SET_USERNAME_CONNECTED", payload: true });
+        dispatch({ type: "SET_USERNAME", payload: email });
+        dispatch({ type: "SET_AUTH_METHOD", payload: "google" });
+    }, []);
 
     const createRoom = useCallback(() => {
         if (state.isCreatingRoom) {
-            console.log("Home: Already creating room, ignoring request")
-            return
+            console.log("Home: Already creating room, ignoring request");
+            return;
         }
 
-        console.log("Home: Creating room")
-        dispatch({ type: "SET_CREATING_ROOM", payload: true })
+        console.log("Home: Creating room");
+        dispatch({ type: "SET_CREATING_ROOM", payload: true });
 
         try {
-            const newRoomId = Math.random().toString(36).substring(2, 12)
-            console.log("Home: Created room with ID:", newRoomId)
-            dispatch({ type: "SET_ROOM_ID", payload: newRoomId })
-            dispatch({ type: "SET_IN_ROOM", payload: true })
+            const newRoomId = Math.random().toString(36).substring(2, 12);
+            console.log("Home: Created room with ID:", newRoomId);
+            dispatch({ type: "SET_ROOM_ID", payload: newRoomId });
+            dispatch({ type: "SET_IN_ROOM", payload: true });
         } catch (error) {
-            console.error("Home: Error creating room:", error)
+            console.error("Home: Error creating room:", error);
         } finally {
-            dispatch({ type: "SET_CREATING_ROOM", payload: false })
+            dispatch({ type: "SET_CREATING_ROOM", payload: false });
         }
-    }, [state.isCreatingRoom])
+    }, [state.isCreatingRoom]);
 
     const joinRoom = useCallback(
         (e: React.FormEvent) => {
-            e.preventDefault()
+            e.preventDefault();
 
             if (state.isJoiningRoom || !state.roomId.trim()) {
-                console.log("Home: Cannot join room - already joining or no room ID")
-                return
+                console.log("Home: Cannot join room - already joining or no room ID");
+                return;
             }
 
-            console.log("Home: Joining room:", state.roomId)
-            dispatch({ type: "SET_JOINING_ROOM", payload: true })
+            console.log("Home: Joining room:", state.roomId);
+            dispatch({ type: "SET_JOINING_ROOM", payload: true });
 
             try {
-                dispatch({ type: "SET_IN_ROOM", payload: true })
+                dispatch({ type: "SET_IN_ROOM", payload: true });
             } catch (error) {
-                console.error("Home: Error joining room:", error)
+                console.error("Home: Error joining room:", error);
             } finally {
-                dispatch({ type: "SET_JOINING_ROOM", payload: false })
+                dispatch({ type: "SET_JOINING_ROOM", payload: false });
             }
         },
         [state.isJoiningRoom, state.roomId],
-    )
+    );
 
     const handleLeaveRoom = useCallback(() => {
-        console.log("Home: Leaving room")
-        dispatch({ type: "SET_IN_ROOM", payload: false })
-        dispatch({ type: "SET_ROOM_ID", payload: "" })
-    }, [])
+        console.log("Home: Leaving room");
+        dispatch({ type: "SET_IN_ROOM", payload: false });
+        dispatch({ type: "SET_ROOM_ID", payload: "" });
+    }, []);
 
     const handleDisconnect = useCallback(() => {
-        console.log("Home: Starting signout")
-
-        // Reset the state to initial values
-        dispatch({ type: "RESET" })
-
-        // Clear local storage to prevent wallet auto-reconnect
-        localStorage.removeItem('shouldConnectWallet')
-
-        console.log("Home: Signout completed")
-    }, [])
-
-    const handleWalletDisconnect = useCallback(() => {
-        console.log("Home: Disconnecting wallet")
-        dispatch({ type: "SET_WALLET_CONNECTED", payload: false })
-        dispatch({ type: "SET_WALLET_ADDRESS", payload: "" })
-        if (!state.username) {
-            dispatch({ type: "SET_USERNAME_CONNECTED", payload: false })
+        console.log("Home: Starting signout");
+        
+        // If wallet is connected, disconnect it
+        if (state.walletConnected) {
+            disconnect();
         }
-    }, [state.username])
+        
+        dispatch({ type: "RESET" });
+        console.log("Home: Signout completed");
+    }, [state.walletConnected, disconnect]);
 
-    // Prevent auto-reconnect after disconnect
     useEffect(() => {
-        const shouldAutoConnect = localStorage.getItem('shouldConnectWallet') === 'true'
-        if (!shouldAutoConnect && (state.walletConnected || state.isAuthenticated)) {
-            console.log("Home: Clearing state due to no auto-connect preference")
-            dispatch({ type: "RESET" })
-        }
-    }, [state.walletConnected, state.isAuthenticated])
-
-    // Debug state changes
-    useEffect(() => {
-        console.log("Home: State updated:", state)
-    }, [state])
+        console.log("Home: State updated:", state);
+    }, [state]);
 
     return (
         <main className="flex min-h-screen flex-col items-center p-4 md:p-24">
@@ -213,7 +210,7 @@ export default function Home() {
                         <div className="flex flex-col items-center gap-4">
                             <GoogleAuth onConnect={handleGoogleConnect} />
                             <UsernameAuth onConnect={handleUsernameConnect} />
-                            <WalletAuth onConnect={handleWalletConnect} onDisconnect={handleWalletDisconnect} />
+                            <CustomConnectButton />
                         </div>
                     </div>
                 ) : !state.inRoom ? (
@@ -265,5 +262,5 @@ export default function Home() {
                 )}
             </div>
         </main>
-    )
+    );
 }

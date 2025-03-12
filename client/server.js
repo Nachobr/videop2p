@@ -1,21 +1,43 @@
-const https = require('https');
+const { createServer } = require('https');
+const { parse } = require('url');
 const next = require('next');
 const fs = require('fs');
+const path = require('path');
 
 const dev = process.env.NODE_ENV !== 'production';
-const app = next({ dev });
+const hostname = process.env.HOST || '0.0.0.0';
+const port = parseInt(process.env.PORT || '3000', 10);
+
+// Set the asset prefix for the Next.js app
+process.env.NEXT_PUBLIC_ASSET_PREFIX = `https://${process.env.LOCAL_IP || '192.168.100.58'}:${port}`;
+
+const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
 
 const httpsOptions = {
-  key: fs.readFileSync('./ssl/localhost.key'),
-  cert: fs.readFileSync('./ssl/localhost.cert')
+  key: fs.readFileSync(path.join(__dirname, 'ssl', 'localhost.key')),
+  cert: fs.readFileSync(path.join(__dirname, 'ssl', 'localhost.cert')),
 };
 
 app.prepare().then(() => {
-  https.createServer(httpsOptions, (req, res) => {
-    handle(req, res);
-  }).listen(3000, '0.0.0.0', (err) => {
+  createServer(httpsOptions, (req, res) => {
+    // Set CORS headers
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, PATCH, DELETE');
+    res.setHeader('Access-Control-Allow-Headers', 'X-Requested-With,content-type');
+    
+    // Handle preflight requests
+    if (req.method === 'OPTIONS') {
+      res.writeHead(200);
+      res.end();
+      return;
+    }
+    
+    const parsedUrl = parse(req.url, true);
+    handle(req, res, parsedUrl);
+  }).listen(port, hostname, (err) => {
     if (err) throw err;
-    console.log('> Ready on https://192.168.100.58:3000');
+    console.log(`> Ready on https://${hostname}:${port}`);
+    console.log(`> Network access: https://${process.env.LOCAL_IP || '192.168.100.58'}:${port}`);
   });
 });

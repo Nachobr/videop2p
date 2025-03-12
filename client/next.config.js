@@ -1,8 +1,10 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
     reactStrictMode: true,
-    // Enable cross-origin loading of chunks
-    assetPrefix: process.env.NODE_ENV === 'production' ? undefined : '',
+    // Configure asset prefix for network access
+    assetPrefix: process.env.NODE_ENV === 'production' 
+        ? undefined 
+        : process.env.NEXT_PUBLIC_ASSET_PREFIX || '',
     // Allow loading from any hostname during development
     experimental: {
         // Disable optimizeCss since it's causing issues
